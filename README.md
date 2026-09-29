@@ -25,8 +25,17 @@ The isolated Linux desktop runs XFCE under Xvfb, with Chromium available for bro
 
 ## Verification videos
 
-- [Isolated desktop launch and browser navigation (21.5 seconds)](assets/videos/agentbox-cua-workflow.mp4)
-- [CUA MCP browser interaction (6 seconds)](assets/videos/agentbox-mcp-verification.mp4)
+Isolated desktop launch and browser navigation (21.5 seconds):
+
+https://github.com/user-attachments/assets/1443e654-b1ac-48ed-b5dc-804ed1739d46
+
+[Download the MP4](assets/videos/agentbox-cua-workflow.mp4)
+
+CUA MCP browser interaction (6 seconds):
+
+https://github.com/user-attachments/assets/94a08f8a-4b8d-47ff-a72e-823e83ab59ad
+
+[Download the MP4](assets/videos/agentbox-mcp-verification.mp4)
 
 ## Install the skills
 
