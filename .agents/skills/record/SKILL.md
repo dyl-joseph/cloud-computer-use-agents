@@ -24,6 +24,8 @@ Use this skill when reproducing or visually verifying UI behavior, or when the u
 - On one persistent GUI connection, start recording, perform the action, wait for one observable postcondition (no fixed sleep), capture the final screenshot, then stop.
 - Use one controller for a single linear UI flow. If the user specifies a worker model, give it only the ready-state facts, action, success evidence, and stop limit; request a concise result.
 
+For an Agentbox microVM, use the same instance ID for CUA and terminal work. Keep one persistent CUA MCP connection for the interaction. Prepare the browser and target page first, then call `start_recording` with `record_video:true` immediately before the UI action; stop at the first clear success or blocker. Save under `/home/agent/captures/<name>` inside the guest, and run `agentbox record <id> pull <name>` on the host to export the files for inspection.
+
 ## Keep and report evidence
 
 - Write artifacts to the repository's existing test-results or artifact directory. Otherwise use `test-results/record/<run-id>/`.

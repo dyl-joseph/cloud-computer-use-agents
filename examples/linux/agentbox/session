@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+mkdir -p "$XDG_RUNTIME_DIR"
+chmod 700 "$XDG_RUNTIME_DIR"
+
+Xvfb "$DISPLAY" -screen 0 1600x1000x24 -nolisten tcp -noreset -ac &
+xvfb_pid=$!
+dbus-daemon --session --address="$DBUS_SESSION_BUS_ADDRESS" --nofork --nopidfile &
+dbus_pid=$!
+
+cua_pid=
+desktop_pid=
+cleanup() {
+  local pid
+  for pid in "$desktop_pid" "$cua_pid" "$dbus_pid" "$xvfb_pid"; do
+    [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true
+  done
+  for pid in "$desktop_pid" "$cua_pid" "$dbus_pid" "$xvfb_pid"; do
+    [[ -n "$pid" ]] && wait "$pid" 2>/dev/null || true
+  done
+}
+trap cleanup EXIT
+trap 'exit 0' INT TERM
+
+for ((attempt = 0; attempt < 100; attempt++)); do
+  [[ -S /tmp/.X11-unix/X99 && -S /run/agentbox/dbus.sock ]] && break
+  sleep 0.1
+done
+
+[[ -S /tmp/.X11-unix/X99 ]] || { echo "Xvfb did not start on $DISPLAY" >&2; exit 1; }
+[[ -S /run/agentbox/dbus.sock ]] || { echo "D-Bus did not start" >&2; exit 1; }
+
+cua-driver serve --embedded --socket /run/agentbox/cua.sock &
+cua_pid=$!
+for ((attempt = 0; attempt < 100; attempt++)); do
+  [[ -S /run/agentbox/cua.sock ]] && break
+  sleep 0.1
+done
+[[ -S /run/agentbox/cua.sock ]] || { echo "CUA socket did not start" >&2; exit 1; }
+
+startxfce4 &
+desktop_pid=$!
+wait -n "$xvfb_pid" "$dbus_pid" "$cua_pid" "$desktop_pid"

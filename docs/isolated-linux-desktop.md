@@ -2,6 +2,8 @@
 
 An Xvfb desktop gives an agent a separate X11 session. It can keep running while the person uses or locks a Hyprland, GNOME, or KDE session. Locking the physical screen does not lock the separate Xvfb display. Suspending the laptop pauses both.
 
+This service provides one desktop for the user account. For a separate Linux VM, browser profile, CUA connection, workspace, and recordings per agent, use [Agentbox](agentbox.md).
+
 This example starts Xvfb, a private D-Bus session, XFCE, and a CUA Driver daemon on a private Unix socket. It does not unlock the physical desktop or share its browser profile.
 
 ## Prerequisites
