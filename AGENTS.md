@@ -16,3 +16,4 @@ Do not add commit attribution trailers for agents or models.
 ## Last Updated
 
 2026-09-29 — implemented and verified the Microsandbox VM based Agentbox lifecycle, MCP, recording, and clone isolation.
+2026-09-29 — added the reviewed Agentbox verification videos under `assets/videos/`; raw recordings remain ignored.

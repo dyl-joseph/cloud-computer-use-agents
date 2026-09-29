@@ -23,6 +23,11 @@ The isolated Linux desktop runs XFCE under Xvfb, with Chromium available for bro
 
 ![Microsandbox VM desktop with Chromium open](assets/screenshots/agentbox-microsandbox-desktop.png)
 
+## Verification videos
+
+- [Isolated desktop launch and browser navigation (21.5 seconds)](assets/videos/agentbox-cua-workflow.mp4)
+- [CUA MCP browser interaction (6 seconds)](assets/videos/agentbox-mcp-verification.mp4)
+
 ## Install the skills
 
 Clone the repo and run the installer:

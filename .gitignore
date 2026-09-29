@@ -5,3 +5,6 @@ test-results/
 recordings/
 *.mp4
 *.webm
+
+# Curated verification videos
+!assets/videos/*.mp4
