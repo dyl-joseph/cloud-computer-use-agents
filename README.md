@@ -55,7 +55,7 @@ If a skill with the same name already exists at a destination, the script leaves
 
 These skills provide workflows, not a GUI runtime. Install and configure a computer-use driver separately. For CUA Driver, start with its [official docs](https://cua.ai/docs/cua-driver) and [upstream repository](https://github.com/trycua/cua). Its platform-specific skill contains the current tool commands; the Linux guide here covers the separate Xvfb desktop setup.
 
-For one VM per agent, use [Agentbox](docs/agentbox.md). Each VM has its own guest kernel, Chromium profile, XFCE desktop, CUA socket, workspace, and recordings. Connect through `agentbox mcp <id>` and route terminal commands through the same ID. The single-user systemd/Xvfb setup remains available in the Linux guide.
+For one VM per agent, use [Agentbox](docs/agentbox.md). Each VM has its own guest kernel, Chromium profile, XFCE desktop, CUA socket, workspace, and recordings. Connect through `agentbox mcp <id>`, route terminal commands through the same ID, and copy inputs with `agentbox push <id> <host-path> [guest-path]`. The single-user systemd/Xvfb setup remains available in the Linux guide.
 
 ## Skill locations and references
 

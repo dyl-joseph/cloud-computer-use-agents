@@ -2,28 +2,49 @@
 set -euo pipefail
 
 [[ "$(id -u)" == 0 ]] || { echo "provisioning must run as root inside the VM" >&2; exit 1; }
-[[ -f /tmp/agentbox-session ]] || { echo "missing /tmp/agentbox-session" >&2; exit 1; }
-[[ ! -f /var/lib/agentbox/provisioned ]] || exit 0
+
+mode="${1:-provision}"
+[[ "$mode" == provision || "$mode" == tools ]] || { echo "unknown provisioning mode: $mode" >&2; exit 1; }
+[[ "$mode" == tools || -f /tmp/agentbox-session ]] || { echo "missing /tmp/agentbox-session" >&2; exit 1; }
 
 install -d -m 755 /var/log/agentbox
 exec >>/var/log/agentbox/provision.log 2>&1
 
 export DEBIAN_FRONTEND=noninteractive
-dpkg --configure -a
-apt-get update
-apt-get install --yes --no-install-recommends \
-  at-spi2-core \
-  ca-certificates \
-  chromium \
-  curl \
-  dbus-x11 \
-  ffmpeg \
-  fonts-liberation \
-  libxkbcommon-x11-0 \
-  libxtst6 \
-  procps \
-  xfce4 \
-  xvfb
+
+install_agentbox_tools() {
+  [[ ! -f /var/lib/agentbox/agentbox-tools-v1 ]] || return 0
+  dpkg --configure -a
+  apt-get update
+  apt-get install --yes --no-install-recommends \
+    at-spi2-core \
+    ca-certificates \
+    chromium \
+    curl \
+    dbus-x11 \
+    ffmpeg \
+    fonts-liberation \
+    gh \
+    git \
+    jq \
+    libxkbcommon-x11-0 \
+    libxtst6 \
+    nodejs \
+    npm \
+    procps \
+    python3 \
+    unzip \
+    xfce4 \
+    xvfb \
+    zip
+  install -d -m 755 /var/lib/agentbox
+  touch /var/lib/agentbox/agentbox-tools-v1
+  rm -rf /var/lib/apt/lists/*
+}
+
+install_agentbox_tools
+[[ "$mode" == provision ]] || exit 0
+[[ ! -f /var/lib/agentbox/provisioned ]] || exit 0
 
 if ! getent group agent >/dev/null; then
   groupadd --gid 1000 agent
@@ -45,4 +66,4 @@ runuser -u agent -- env HOME=/home/agent \
 
 install -d -m 755 /var/lib/agentbox
 touch /var/lib/agentbox/provisioned
-rm -rf /var/lib/apt/lists/* /tmp/install-cua-driver.sh
+rm -f /tmp/install-cua-driver.sh

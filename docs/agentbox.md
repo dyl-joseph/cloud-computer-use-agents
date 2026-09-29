@@ -22,7 +22,7 @@ mkdir -p ~/.local/bin
 ln -s "$PWD/examples/linux/agentbox/agentbox" ~/.local/bin/agentbox
 ```
 
-The first seed boot provisions Debian with Chromium, XFCE, Xvfb, CUA Driver, and ffmpeg. It may take a few minutes. The defaults are 2 CPUs, 2 GiB memory, a 16 GiB guest disk, and public internet access. Set `AGENTBOX_CPUS`, `AGENTBOX_MEMORY`, `AGENTBOX_ROOT_DISK`, `AGENTBOX_IMAGE`, or `AGENTBOX_NETWORK_PROFILE` before the first `agentbox seed start`. Worker clones inherit the seed disk and network setup, plus its CPU and memory allocation.
+The first seed boot provisions Debian with Chromium, XFCE, Xvfb, CUA Driver, ffmpeg, Git, GitHub CLI, jq, Node.js, npm, Python 3, unzip, and zip. It may take a few minutes. A versioned marker installs newly added tools the next time an older seed starts. The defaults are 2 CPUs, 2 GiB memory, a 16 GiB guest disk, and public internet access. Set `AGENTBOX_CPUS`, `AGENTBOX_MEMORY`, `AGENTBOX_ROOT_DISK`, `AGENTBOX_IMAGE`, or `AGENTBOX_NETWORK_PROFILE` before the first `agentbox seed start`. Worker clones inherit the seed disk and network setup, plus its CPU and memory allocation.
 
 ## Sign in once, then clone
 
@@ -41,6 +41,18 @@ agentbox seed stop
 agentbox clone researcher-1
 agentbox clone researcher-2
 ```
+
+To let clones use GitHub, sign in once with GitHub CLI inside the seed before stopping it:
+
+```sh
+agentbox seed start
+agentbox shell main
+gh auth login
+exit
+agentbox seed stop
+```
+
+New clones inherit the seed's GitHub CLI credentials. Each clone is security-sensitive because it can use those credentials. Sign in inside the seed. Never copy a host token or host GitHub CLI configuration into a guest.
 
 Each clone gets an independent writable disk copied from the stopped seed. A clone's later cookie changes do not sync to other clones. Refresh the seed and create new clones when credentials need updating.
 
@@ -66,7 +78,12 @@ Route terminal work through the same ID:
 ```sh
 agentbox exec researcher-1 -- pwd
 agentbox shell researcher-1
+agentbox push researcher-1 ./task.json
+agentbox push researcher-1 ./project /home/agent/work/project
 ```
+
+`agentbox push` copies a host file or directory into the guest. Without a guest path, it uses `/home/agent/work/<basename>`. The copied path and all directory contents belong to `agent:agent`.
+Pushing a directory fails if the guest destination already exists; remove it or choose another path.
 
 Other useful commands:
 
