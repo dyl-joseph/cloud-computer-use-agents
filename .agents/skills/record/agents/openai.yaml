@@ -1,0 +1,4 @@
+interface:
+  display_name: "Record"
+  short_description: "Capture screenshots or cursor-visible workflow videos"
+  default_prompt: "$record capture visual evidence of this workflow."

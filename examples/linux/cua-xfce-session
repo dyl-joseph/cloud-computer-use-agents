@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CUA_SOCKET="${RUNTIME_DIRECTORY:?}/cua.sock"
+CUA_BIN="${CUA_DRIVER_BIN:-$(command -v cua-driver)}"
+
+"$CUA_BIN" serve --socket "$CUA_SOCKET" &
+CUA_PID=$!
+
+cleanup() {
+  kill "$CUA_PID" 2>/dev/null || true
+  wait "$CUA_PID" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+for ((attempt = 0; attempt < 100; attempt++)); do
+  [[ -S "$CUA_SOCKET" ]] && break
+  sleep 0.1
+done
+
+[[ -S "$CUA_SOCKET" ]] || {
+  echo "CUA socket did not start: $CUA_SOCKET" >&2
+  exit 1
+}
+
+/usr/bin/startxfce4
