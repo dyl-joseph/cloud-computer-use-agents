@@ -39,6 +39,7 @@ Usage:
   agentbox open <id> <http-or-https-or-about-or-chrome-url>
   agentbox shell <id>
   agentbox exec <id> -- <command> [args...]
+  agentbox push <id> <host-path> [guest-path]
   agentbox cua <id> <tool> [json]
   agentbox mcp <id>
   agentbox record <id> pull <name>
@@ -215,8 +216,9 @@ seed_start() {
   : > "$SEED_DIRTY_FILE"
   chmod 600 "$SEED_DIRTY_FILE"
 
-  if ! guest_root_exec main /usr/bin/test -f /var/lib/agentbox/provisioned 2>/dev/null; then
-    [[ "$quiet" == true ]] || printf 'Provisioning the isolated desktop (first run)...\n'
+  if ! guest_root_exec main /bin/sh -c \
+    'test -f /var/lib/agentbox/provisioned && test -f /var/lib/agentbox/agentbox-tools-v1' 2>/dev/null; then
+    [[ "$quiet" == true ]] || printf 'Provisioning or updating the isolated desktop...\n'
     run_msb copy --quiet "$SCRIPT_DIR/provision" "$(vm_name main):/tmp/agentbox-provision"
     run_msb copy --quiet "$SCRIPT_DIR/session" "$(vm_name main):/tmp/agentbox-session"
     guest_root_exec main /bin/chmod 755 /tmp/agentbox-provision
@@ -389,6 +391,24 @@ exec_instance() {
     --workdir /home/agent/work "$(vm_name "$id")" -- "$@"
 }
 
+push_path() {
+  local id="$1" host_path="$2" guest_path="${3:-}" base
+  valid_id "$id"
+  [[ -e "$host_path" || -L "$host_path" ]] || fail "host path does not exist: $host_path"
+  if [[ -z "$guest_path" ]]; then
+    base="$(basename -- "$host_path")"
+    guest_path="/home/agent/work/$base"
+  fi
+  [[ "$guest_path" == /* ]] || fail "guest path must be absolute: $guest_path"
+  start_instance "$id"
+  if [[ -d "$host_path" ]] && guest_root_exec "$id" /usr/bin/test -e "$guest_path"; then
+    fail "guest path already exists: $guest_path; remove it or choose another guest path"
+  fi
+  run_msb copy "$host_path" "$(vm_name "$id"):$guest_path"
+  guest_root_exec "$id" /bin/chown -R agent:agent "$guest_path"
+  printf 'Pushed %s to %s:%s\n' "$host_path" "$id" "$guest_path"
+}
+
 cua_call() {
   local id="$1" tool="$2" payload="${3-}"
   [[ -n "$payload" ]] || payload='{}'
@@ -462,6 +482,10 @@ case "$command_name" in
   exec)
     [[ $# -ge 3 ]] || { usage; exit 2; }
     exec_instance "$@"
+    ;;
+  push)
+    [[ $# -ge 2 && $# -le 3 ]] || { usage; exit 2; }
+    push_path "$@"
     ;;
   cua)
     [[ $# -ge 2 && $# -le 3 ]] || { usage; exit 2; }
