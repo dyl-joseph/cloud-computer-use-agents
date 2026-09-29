@@ -1,0 +1,485 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+IMAGE="${AGENTBOX_IMAGE:-debian:trixie-slim}"
+CPUS="${AGENTBOX_CPUS:-2}"
+MEMORY="${AGENTBOX_MEMORY:-2G}"
+ROOT_DISK="${AGENTBOX_ROOT_DISK:-16G}"
+NETWORK_PROFILE="${AGENTBOX_NETWORK_PROFILE:-public}"
+DATA_HOME="${XDG_DATA_HOME:-${HOME:?HOME is not set}/.local/share}"
+STATE_ROOT="$DATA_HOME/agentbox"
+INSTANCE_ROOT="$STATE_ROOT/instances"
+SNAPSHOT_FILE="$STATE_ROOT/main-snapshot"
+SEED_DIRTY_FILE="$STATE_ROOT/main-seed-dirty"
+RUNTIME_BASE="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+LOCK_ROOT="$RUNTIME_BASE/agentbox-client-locks"
+SCRIPT_PATH="$(readlink -f -- "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(dirname -- "$SCRIPT_PATH")"
+MSB_BIN="${AGENTBOX_MSB:-}"
+CUA_BIN="/home/agent/.local/bin/cua-driver"
+LOCK_FD=""
+
+GUEST_ENV=(
+  --env HOME=/home/agent
+  --env DISPLAY=:99
+  --env XDG_RUNTIME_DIR=/run/agentbox
+  --env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/agentbox/dbus.sock
+  --env XDG_SESSION_TYPE=x11
+  --env PATH=/home/agent/.local/bin:/usr/local/bin:/usr/bin:/bin
+)
+
+usage() {
+  cat <<'EOF'
+Usage:
+  agentbox seed start|stop
+  agentbox clone <id>
+  agentbox start|stop <id>
+  agentbox remove <id>
+  agentbox list
+  agentbox open <id> <http-or-https-or-about-or-chrome-url>
+  agentbox shell <id>
+  agentbox exec <id> -- <command> [args...]
+  agentbox cua <id> <tool> [json]
+  agentbox mcp <id>
+  agentbox record <id> pull <name>
+
+Each ID owns one Microsandbox VM. "main" is reserved for the login seed.
+EOF
+}
+
+fail() {
+  printf 'agentbox: %s\n' "$*" >&2
+  exit 1
+}
+
+need_runtime() {
+  if [[ -z "$MSB_BIN" ]]; then
+    MSB_BIN="$(command -v msb || true)"
+    [[ -n "$MSB_BIN" ]] || MSB_BIN="${HOME:?HOME is not set}/.local/bin/msb"
+  fi
+  [[ -x "$MSB_BIN" ]] || fail "Microsandbox is missing; install its user-level CLI and try again"
+  [[ -c /dev/kvm && -r /dev/kvm && -w /dev/kvm ]] || fail "/dev/kvm must be accessible to your user"
+}
+
+run_msb() {
+  if [[ -n "$LOCK_FD" ]]; then
+    "$MSB_BIN" "$@" {LOCK_FD}>&-
+  else
+    "$MSB_BIN" "$@"
+  fi
+}
+
+valid_id() {
+  [[ "$1" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail "invalid instance ID: $1"
+  (( ${#1} <= 48 )) || fail "instance ID is too long: $1"
+}
+
+vm_name() { printf 'agentbox-%s' "$1"; }
+instance_dir() { printf '%s/%s' "$INSTANCE_ROOT" "$1"; }
+
+ensure_dirs() {
+  local id="$1" root
+  root="$(instance_dir "$id")"
+  install -d -m 700 "$STATE_ROOT" "$INSTANCE_ROOT" "$root" "$root/captures" "$LOCK_ROOT"
+  chmod 700 "$STATE_ROOT" "$INSTANCE_ROOT" "$root" "$root/captures" "$LOCK_ROOT"
+}
+
+lock_instance() {
+  local id="$1"
+  exec {LOCK_FD}>"$LOCK_ROOT/$id.lock"
+  flock -x "$LOCK_FD"
+}
+
+unlock_instance() {
+  [[ -n "$LOCK_FD" ]] || return 0
+  flock -u "$LOCK_FD"
+  exec {LOCK_FD}>&-
+  LOCK_FD=""
+}
+
+vm_exists() {
+  run_msb inspect "$(vm_name "$1")" --format json >/dev/null 2>&1
+}
+
+assert_managed() {
+  local name="$1" data label
+  data="$(run_msb inspect "$name" --format json 2>/dev/null)" \
+    || fail "could not inspect sandbox: $name"
+  label="$(python3 -c 'import json,sys; d=json.load(sys.stdin); c=d.get("active_config") or d.get("config") or {}; labels=c.get("labels") or {}; print(str(labels.get("agentbox","")).lower())' <<<"$data")"
+  [[ "$label" == true ]] || fail "sandbox name is already in use by another workload: $name"
+}
+
+vm_status() {
+  local name="$1" data
+  if ! data="$(run_msb status "$name" --format json 2>/dev/null)"; then
+    printf 'not-started'
+    return 0
+  fi
+  python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])' <<<"$data"
+}
+
+guest_root_exec() {
+  local id="$1"
+  shift
+  run_msb exec --no-tty "$(vm_name "$id")" -- "$@" </dev/null
+}
+
+guest_agent_exec() {
+  local id="$1"
+  shift
+  run_msb exec --no-tty --user agent "${GUEST_ENV[@]}" \
+    --workdir /home/agent/work "$(vm_name "$id")" -- "$@" </dev/null
+}
+
+ensure_running() {
+  local id="$1" name status
+  name="$(vm_name "$id")"
+  status="$(vm_status "$name")"
+  case "$status" in
+    Running) ;;
+    Stopped) run_msb start "$name" >/dev/null ;;
+    not-started) fail "instance $id does not exist; clone it from the stopped main seed first" ;;
+    *) fail "instance $id has status '$status'; inspect it with 'msb inspect $name'" ;;
+  esac
+}
+
+sync_guest_session() {
+  local id="$1" name
+  name="$(vm_name "$id")"
+  run_msb copy --quiet "$SCRIPT_DIR/session" "$name:/tmp/agentbox-session"
+  guest_root_exec "$id" /usr/bin/install -d -o agent -g agent -m 700 \
+    /home/agent/.local/bin /home/agent/work /home/agent/captures
+  guest_root_exec "$id" /usr/bin/install -o agent -g agent -m 755 \
+    /tmp/agentbox-session /home/agent/.local/bin/agentbox-session
+}
+
+session_alive() {
+  guest_agent_exec "$1" "$CUA_BIN" list_windows '{}' \
+    --socket /run/agentbox/cua.sock >/dev/null 2>&1
+}
+
+start_desktop() {
+  local id="$1" attempt
+  sync_guest_session "$id"
+  if session_alive "$id"; then return 0; fi
+
+  guest_root_exec "$id" /usr/bin/install -d -o agent -g agent -m 700 /run/agentbox
+  guest_root_exec "$id" /bin/rm -f /run/agentbox/cua.sock /run/agentbox/dbus.sock \
+    /tmp/.X99-lock /tmp/.X11-unix/X99
+  guest_agent_exec "$id" /bin/sh -c \
+    'nohup /home/agent/.local/bin/agentbox-session >/tmp/agentbox-session.log 2>&1 </dev/null &'
+
+  for ((attempt = 0; attempt < 60; attempt++)); do
+    if session_alive "$id"; then return 0; fi
+    sleep 0.2
+  done
+  guest_root_exec "$id" /bin/tail -n 80 /tmp/agentbox-session.log >&2 || true
+  fail "the isolated desktop did not start for $id"
+}
+
+start_instance() {
+  local id="$1" name
+  valid_id "$id"
+  [[ "$id" != main ]] || { seed_start true; return; }
+  need_runtime
+  ensure_dirs "$id"
+  lock_instance "$id"
+  name="$(vm_name "$id")"
+  vm_exists "$id" || fail "instance $id does not exist; run 'agentbox clone $id' first"
+  assert_managed "$name"
+  ensure_running "$id"
+  start_desktop "$id"
+  unlock_instance
+}
+
+create_seed_if_missing() {
+  local name
+  name="$(vm_name main)"
+  if vm_exists main; then
+    assert_managed "$name"
+    ensure_running main
+    return 0
+  fi
+
+  run_msb create --name "$name" --cpus "$CPUS" --memory "$MEMORY" \
+    --root-disk "$ROOT_DISK" --net "$NETWORK_PROFILE" \
+    --label agentbox=true "$IMAGE"
+}
+
+seed_start() {
+  local quiet="${1:-false}"
+  need_runtime
+  ensure_dirs main
+  lock_instance main
+  if [[ "$quiet" == true ]]; then create_seed_if_missing >&2; else create_seed_if_missing; fi
+  : > "$SEED_DIRTY_FILE"
+  chmod 600 "$SEED_DIRTY_FILE"
+
+  if ! guest_root_exec main /usr/bin/test -f /var/lib/agentbox/provisioned 2>/dev/null; then
+    [[ "$quiet" == true ]] || printf 'Provisioning the isolated desktop (first run)...\n'
+    run_msb copy --quiet "$SCRIPT_DIR/provision" "$(vm_name main):/tmp/agentbox-provision"
+    run_msb copy --quiet "$SCRIPT_DIR/session" "$(vm_name main):/tmp/agentbox-session"
+    guest_root_exec main /bin/chmod 755 /tmp/agentbox-provision
+    if ! guest_root_exec main /bin/bash /tmp/agentbox-provision; then
+      guest_root_exec main /usr/bin/tail -n 80 /var/log/agentbox/provision.log >&2 || true
+      fail "guest provisioning failed; see /var/log/agentbox/provision.log inside agentbox-main"
+    fi
+  fi
+
+  if [[ "$quiet" == true ]]; then start_desktop main >&2; else start_desktop main; fi
+  unlock_instance
+  [[ "$quiet" == true ]] || printf 'Login seed is ready. Open a site, sign in, then run: agentbox seed stop\n'
+}
+
+close_chromium() {
+  local id="$1" attempt
+  guest_root_exec "$id" /usr/bin/pkill -TERM -x chromium >/dev/null 2>&1 || true
+  for ((attempt = 0; attempt < 50; attempt++)); do
+    if ! guest_root_exec "$id" /usr/bin/pgrep -x chromium >/dev/null 2>&1; then return 0; fi
+    sleep 0.2
+  done
+}
+
+stop_vm() {
+  local id="$1" name status
+  name="$(vm_name "$id")"
+  status="$(vm_status "$name")"
+  [[ "$status" == Running ]] || return 0
+  close_chromium "$id"
+  run_msb stop --timeout 20 "$name" >/dev/null
+}
+
+seed_snapshot() {
+  local snapshot_name snapshot_ref temporary
+  snapshot_name="seed-$(date -u +%Y%m%dT%H%M%SZ)"
+  run_msb snapshot create "$snapshot_name" --sandbox "$(vm_name main)" --quiet
+  snapshot_ref="$(vm_name main):$snapshot_name"
+  temporary="$STATE_ROOT/.main-snapshot-$$"
+  printf '%s\n' "$snapshot_ref" > "$temporary"
+  chmod 600 "$temporary"
+  mv -- "$temporary" "$SNAPSHOT_FILE"
+  rm -f -- "$SEED_DIRTY_FILE"
+  printf 'Seed snapshot ready: %s\n' "$snapshot_ref"
+}
+
+seed_stop() {
+  local status
+  need_runtime
+  lock_instance main
+  vm_exists main || fail "the login seed has not been created; run 'agentbox seed start'"
+  assert_managed "$(vm_name main)"
+  status="$(vm_status "$(vm_name main)")"
+  if [[ "$status" == Stopped && -f "$SNAPSHOT_FILE" && ! -f "$SEED_DIRTY_FILE" ]]; then
+    printf 'Seed is already stopped. Current snapshot: %s\n' "$(<"$SNAPSHOT_FILE")"
+    unlock_instance
+    return 0
+  fi
+  stop_vm main
+  seed_snapshot
+  unlock_instance
+}
+
+clone_instance() {
+  local id="$1" name snapshot_ref seed_config seed_resources seed_cpus seed_memory
+  valid_id "$id"
+  [[ "$id" != main ]] || fail "main is reserved for the login seed"
+  need_runtime
+  ensure_dirs "$id"
+  lock_instance "$id"
+
+  name="$(vm_name "$id")"
+  if vm_exists "$id"; then
+    assert_managed "$name"
+    fail "instance $id already exists; stop and remove it before cloning again"
+  fi
+  [[ -f "$SNAPSHOT_FILE" ]] || fail "sign in inside main, run 'agentbox seed stop', then clone"
+  [[ ! -f "$SEED_DIRTY_FILE" ]] || fail "the login seed has unsnapshotted changes; run 'agentbox seed stop' before cloning"
+  snapshot_ref="$(<"$SNAPSHOT_FILE")"
+  [[ "$snapshot_ref" =~ ^agentbox-main:seed-[A-Za-z0-9._-]+$ ]] \
+    || fail "invalid main snapshot reference: $snapshot_ref"
+  [[ "$(vm_status "$(vm_name main)")" == Stopped ]] \
+    || fail "stop the main seed before cloning"
+
+  seed_config="$(run_msb inspect "$(vm_name main)" --format json)"
+  seed_resources="$(python3 -c 'import json,sys; d=json.load(sys.stdin); c=d.get("active_config") or d.get("config") or {}; r=c.get("resources") or {}; print(r.get("cpus", ""), str(r.get("memory_mib", ""))+"M")' <<<"$seed_config")"
+  read -r seed_cpus seed_memory <<<"$seed_resources"
+  [[ "$seed_cpus" =~ ^[1-9][0-9]*$ && "$seed_memory" =~ ^[1-9][0-9]*M$ ]] \
+    || fail "could not read CPU and memory settings from the stopped seed"
+
+  run_msb restore "$snapshot_ref" --name "$name" >/dev/null
+  run_msb modify "$name" --label agentbox=true --cpus "$seed_cpus" \
+    --memory "$seed_memory" --restart >/dev/null
+  guest_root_exec "$id" /bin/bash -lc \
+    'if [ -d /home/agent/.config/chromium ]; then rm -f -- /home/agent/.config/chromium/SingletonLock /home/agent/.config/chromium/SingletonSocket /home/agent/.config/chromium/SingletonCookie; fi; install -d -o agent -g agent -m 700 /home/agent/work /home/agent/captures; find /home/agent/work /home/agent/captures -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +'
+  start_desktop "$id"
+  unlock_instance
+  printf 'Cloned %s from %s\n' "$id" "$snapshot_ref"
+}
+
+remove_instance() {
+  local id="$1" name
+  valid_id "$id"
+  [[ "$id" != main ]] || fail "main is reserved; use 'agentbox seed stop' to save its browser state"
+  need_runtime
+  ensure_dirs "$id"
+  lock_instance "$id"
+  name="$(vm_name "$id")"
+  if vm_exists "$id"; then
+    assert_managed "$name"
+    run_msb remove --force "$name" >/dev/null
+  fi
+  unlock_instance
+  printf 'Removed VM %s. Host captures remain under %s/captures\n' "$id" "$(instance_dir "$id")"
+}
+
+stop_instance() {
+  local id="$1"
+  valid_id "$id"
+  [[ "$id" != main ]] || { seed_stop; return; }
+  need_runtime
+  ensure_dirs "$id"
+  lock_instance "$id"
+  vm_exists "$id" || { unlock_instance; return 0; }
+  assert_managed "$(vm_name "$id")"
+  stop_vm "$id"
+  unlock_instance
+}
+
+list_instances() {
+  need_runtime
+  shopt -s nullglob
+  local path id status
+  for path in "$INSTANCE_ROOT"/*; do
+    [[ -d "$path" ]] || continue
+    id="${path##*/}"
+    [[ "$id" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || continue
+    if vm_exists "$id"; then status="$(vm_status "$(vm_name "$id")")"; else status=Removed; fi
+    printf '%s\t%s\n' "$id" "$status"
+  done
+}
+
+open_url() {
+  local id="$1" url="$2" payload
+  valid_id "$id"
+  [[ "$url" == http://* || "$url" == https://* || "$url" == about:* || "$url" == chrome://* ]] \
+    || fail "open accepts HTTP, HTTPS, about, or chrome URLs"
+  start_instance "$id"
+  payload="$(python3 -c 'import json,sys; print(json.dumps({"launch_path":"/usr/bin/chromium","additional_arguments":["--no-first-run","--disable-default-apps","--password-store=basic","--user-data-dir=/home/agent/.config/chromium","--start-maximized",sys.argv[1]]}))' "$url")"
+  guest_agent_exec "$id" "$CUA_BIN" launch_app "$payload" --socket /run/agentbox/cua.sock
+}
+
+shell_instance() {
+  local id="$1"
+  start_instance "$id"
+  exec "$MSB_BIN" exec --tty --user agent "${GUEST_ENV[@]}" \
+    --workdir /home/agent/work "$(vm_name "$id")" -- /bin/bash -l
+}
+
+exec_instance() {
+  local id="$1"
+  shift
+  [[ $# -ge 2 && "$1" == -- ]] || { usage; exit 2; }
+  start_instance "$id"
+  shift
+  if [[ -t 0 ]]; then
+    exec "$MSB_BIN" exec --tty --user agent "${GUEST_ENV[@]}" \
+      --workdir /home/agent/work "$(vm_name "$id")" -- "$@"
+  fi
+  exec "$MSB_BIN" exec --stream --user agent "${GUEST_ENV[@]}" \
+    --workdir /home/agent/work "$(vm_name "$id")" -- "$@"
+}
+
+cua_call() {
+  local id="$1" tool="$2" payload="${3-}"
+  [[ -n "$payload" ]] || payload='{}'
+  valid_id "$id"
+  [[ "$tool" =~ ^[a-z][a-z0-9_]*$ ]] || fail "invalid CUA tool name: $tool"
+  start_instance "$id"
+  guest_agent_exec "$id" "$CUA_BIN" "$tool" "$payload" --socket /run/agentbox/cua.sock
+}
+
+mcp_server() {
+  local id="$1"
+  start_instance "$id"
+  exec "$MSB_BIN" exec --stream --user agent "${GUEST_ENV[@]}" \
+    --workdir /home/agent/work "$(vm_name "$id")" -- \
+    "$CUA_BIN" mcp --embedded --socket /run/agentbox/cua.sock
+}
+
+pull_recording() {
+  local id="$1" name="$2" remote temporary destination
+  valid_id "$id"
+  [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || fail "invalid recording name: $name"
+  start_instance "$id"
+  remote="/home/agent/captures/$name"
+  guest_agent_exec "$id" /usr/bin/test -d "$remote" || fail "recording not found: $name"
+  destination="$(instance_dir "$id")/captures/$name"
+  temporary="$(instance_dir "$id")/.capture-$name-$$"
+  rm -rf -- "$temporary"
+  run_msb copy "$(vm_name "$id"):$remote" "$temporary"
+  rm -rf -- "$destination"
+  mv -- "$temporary" "$destination"
+  printf 'Capture saved to %s\n' "$destination"
+}
+
+[[ $# -gt 0 ]] || { usage; exit 2; }
+command_name="$1"
+shift
+
+case "$command_name" in
+  seed)
+    [[ $# -eq 1 ]] || { usage; exit 2; }
+    case "$1" in
+      start) seed_start ;;
+      stop) seed_stop ;;
+      *) usage; exit 2 ;;
+    esac
+    ;;
+  clone)
+    [[ $# -eq 1 ]] || { usage; exit 2; }
+    clone_instance "$1"
+    ;;
+  start|stop)
+    [[ $# -eq 1 ]] || { usage; exit 2; }
+    if [[ "$command_name" == start ]]; then start_instance "$1"; else stop_instance "$1"; fi
+    ;;
+  remove)
+    [[ $# -eq 1 ]] || { usage; exit 2; }
+    remove_instance "$1"
+    ;;
+  list)
+    [[ $# -eq 0 ]] || { usage; exit 2; }
+    list_instances
+    ;;
+  open)
+    [[ $# -eq 2 ]] || { usage; exit 2; }
+    open_url "$1" "$2"
+    ;;
+  shell)
+    [[ $# -eq 1 ]] || { usage; exit 2; }
+    shell_instance "$1"
+    ;;
+  exec)
+    [[ $# -ge 3 ]] || { usage; exit 2; }
+    exec_instance "$@"
+    ;;
+  cua)
+    [[ $# -ge 2 && $# -le 3 ]] || { usage; exit 2; }
+    cua_call "$@"
+    ;;
+  mcp)
+    [[ $# -eq 1 ]] || { usage; exit 2; }
+    mcp_server "$1"
+    ;;
+  record)
+    [[ $# -eq 3 && "$2" == pull ]] || { usage; exit 2; }
+    pull_recording "$1" "$3"
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    usage
+    fail "unknown command: $command_name"
+    ;;
+esac

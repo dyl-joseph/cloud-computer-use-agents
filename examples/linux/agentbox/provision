@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ "$(id -u)" == 0 ]] || { echo "provisioning must run as root inside the VM" >&2; exit 1; }
+[[ -f /tmp/agentbox-session ]] || { echo "missing /tmp/agentbox-session" >&2; exit 1; }
+[[ ! -f /var/lib/agentbox/provisioned ]] || exit 0
+
+install -d -m 755 /var/log/agentbox
+exec >>/var/log/agentbox/provision.log 2>&1
+
+export DEBIAN_FRONTEND=noninteractive
+dpkg --configure -a
+apt-get update
+apt-get install --yes --no-install-recommends \
+  at-spi2-core \
+  ca-certificates \
+  chromium \
+  curl \
+  dbus-x11 \
+  ffmpeg \
+  fonts-liberation \
+  libxkbcommon-x11-0 \
+  libxtst6 \
+  procps \
+  xfce4 \
+  xvfb
+
+if ! getent group agent >/dev/null; then
+  groupadd --gid 1000 agent
+fi
+if ! id agent >/dev/null 2>&1; then
+  useradd --uid 1000 --gid agent --create-home --shell /bin/bash agent
+fi
+
+install -d -o agent -g agent -m 700 \
+  /home/agent/.local/bin /home/agent/work /home/agent/captures /run/agentbox
+install -o agent -g agent -m 755 /tmp/agentbox-session /home/agent/.local/bin/agentbox-session
+
+curl -fsSL https://cua.ai/driver/install.sh -o /tmp/install-cua-driver.sh
+runuser -u agent -- env HOME=/home/agent \
+  PATH=/home/agent/.local/bin:/usr/local/bin:/usr/bin:/bin \
+  bash /tmp/install-cua-driver.sh
+runuser -u agent -- env HOME=/home/agent \
+  /home/agent/.local/bin/cua-driver telemetry disable
+
+install -d -m 755 /var/lib/agentbox
+touch /var/lib/agentbox/provisioned
+rm -rf /var/lib/apt/lists/* /tmp/install-cua-driver.sh

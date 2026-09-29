@@ -6,7 +6,9 @@ Reusable agent skills and Linux examples for driving browsers and desktop apps w
 
 - `.agents/skills/computer-use/`: choose the right control interface, target the intended desktop, and verify what the user can see.
 - `.agents/skills/record/`: capture short, reviewable screenshots and videos of a workflow.
+- `.agents/skills/agentbox/`: route each agent's GUI, browser, terminal, and recordings to its own Linux microVM.
 - `docs/isolated-linux-desktop.md`: run a private Xvfb and XFCE desktop for computer-use tasks while the physical desktop stays locked or in use.
+- `docs/agentbox.md`: create per-agent Microsandbox desktops with independent Chromium profiles cloned from a dedicated sign-in seed.
 - `examples/linux/`: a user service and session launcher for that isolated desktop.
 
 The skills use the `SKILL.md` format. Agent discovery paths differ, so `scripts/install-skills.sh` creates symlinks for common user-level locations. It keeps existing files and links intact.
@@ -18,6 +20,8 @@ The isolated Linux desktop runs XFCE under Xvfb, with Chromium available for bro
 ![Isolated XFCE desktop with Chromium open](assets/screenshots/isolated-xfce-desktop.png)
 
 ![Chromium window running in the isolated desktop](assets/screenshots/chromium-window.png)
+
+![Microsandbox VM desktop with Chromium open](assets/screenshots/agentbox-microsandbox-desktop.png)
 
 ## Install the skills
 
@@ -36,6 +40,8 @@ If a skill with the same name already exists at a destination, the script leaves
 ## Use CUA Driver
 
 These skills provide workflows, not a GUI runtime. Install and configure a computer-use driver separately. For CUA Driver, start with its [official docs](https://cua.ai/docs/cua-driver) and [upstream repository](https://github.com/trycua/cua). Its platform-specific skill contains the current tool commands; the Linux guide here covers the separate Xvfb desktop setup.
+
+For one VM per agent, use [Agentbox](docs/agentbox.md). Each VM has its own guest kernel, Chromium profile, XFCE desktop, CUA socket, workspace, and recordings. Connect through `agentbox mcp <id>` and route terminal commands through the same ID. The single-user systemd/Xvfb setup remains available in the Linux guide.
 
 ## Skill locations and references
 
