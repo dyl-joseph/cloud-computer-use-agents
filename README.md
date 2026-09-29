@@ -11,6 +11,14 @@ Reusable agent skills and Linux examples for driving browsers and desktop apps w
 
 The skills use the `SKILL.md` format. Agent discovery paths differ, so `scripts/install-skills.sh` creates symlinks for common user-level locations. It keeps existing files and links intact.
 
+## Screenshots
+
+The isolated Linux desktop runs XFCE under Xvfb, with Chromium available for browser tasks. It stays separate from the laptop's interactive desktop.
+
+![Isolated XFCE desktop with Chromium open](assets/screenshots/isolated-xfce-desktop.png)
+
+![Chromium window running in the isolated desktop](assets/screenshots/chromium-window.png)
+
 ## Install the skills
 
 Clone the repo and run the installer:
