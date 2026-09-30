@@ -13,6 +13,51 @@ Reusable agent skills and Linux examples for driving browsers and desktop apps w
 
 The skills use the `SKILL.md` format. Agent discovery paths differ, so `scripts/install-skills.sh` creates symlinks for common user-level locations. It keeps existing files and links intact.
 
+## How it works
+
+### Seed once, clone per worker
+
+Sign into websites once in the `main` seed. Every worker then starts from a snapshot of it, with its own copy of that browser profile.
+
+```mermaid
+flowchart LR
+    S1["agentbox seed start"] --> S2["Sign into sites in main"]
+    S2 --> S3["agentbox seed stop<br/>(Chromium closed, disk snapshot)"]
+    S3 --> C1["agentbox clone worker-1"]
+    S3 --> C2["agentbox clone worker-2"]
+    S3 --> C3["agentbox clone worker-n"]
+    C1 & C2 & C3 --> R["Independent VMs:<br/>cookie changes do not sync back"]
+```
+
+### One worker's VM
+
+The agent stays on the host and reaches everything in the guest through one Agentbox ID.
+
+```mermaid
+flowchart TB
+    subgraph Host
+        Agent["Agent (Codex, Claude Code, OpenCode)"]
+        AB["agentbox mcp / cua / exec / record"]
+        MSB["Microsandbox runtime (KVM)"]
+        Out["Pulled recordings"]
+        Agent --> AB --> MSB
+    end
+    subgraph Guest["microVM for one ID"]
+        Sock["CUA Driver daemon<br/>/run/agentbox/cua.sock"]
+        X["XFCE desktop on Xvfb"]
+        B["Chromium profile"]
+        W["/home/agent/work"]
+        Cap["/home/agent/captures"]
+        Sock --> X --> B
+        Sock --> Cap
+    end
+    MSB -- "msb exec --stream (MCP stdio or tool call)" --> Sock
+    MSB -- "exec / shell" --> W
+    Cap -- "agentbox record id pull name" --> Out
+```
+
+The host's own screen can stay locked or in use. Host shell and filesystem tools are not inside the VM unless you route them through `agentbox exec`.
+
 ## Screenshots
 
 The isolated Linux desktop runs XFCE under Xvfb, with Chromium available for browser tasks. It stays separate from the laptop's interactive desktop.
